@@ -1,0 +1,95 @@
+name: CI
+
+# Render is configured with autoDeployTrigger: checksPass, so a deploy only
+# happens after this workflow passes on the same commit.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test and migrate
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: wealthnexus
+          POSTGRES_PASSWORD: wealthnexus_dev
+          POSTGRES_DB: wealthnexus
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Both point at the service container. The app URL exists so the
+      # application can be imported (it validates its settings at import
+      # time); the test URL is the database pytest creates and drops.
+      WEALTHY_DATABASE_URL: postgresql+psycopg://wealthnexus:wealthnexus_dev@localhost:5432/wealthnexus
+      WEALTHY_TEST_DATABASE_URL: postgresql+psycopg://wealthnexus:wealthnexus_dev@localhost:5432/wealthnexus_test
+      # Debug mode keeps the local-development token flow available to the
+      # test suite and relaxes the production auth guard.
+      WEALTHY_DEBUG: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Create the test database
+        run: |
+          PGPASSWORD=wealthnexus_dev psql -h localhost -U wealthnexus -d postgres \
+            -c "CREATE DATABASE wealthnexus_test;"
+
+      - name: Apply migrations from scratch
+        run: alembic upgrade head
+
+      - name: Check for model/schema drift
+        run: alembic check
+
+      - name: Run the test suite
+        run: pytest -q
+
+  secrets:
+    name: Secret hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fail if an environment file is tracked
+        run: |
+          if git ls-files --error-unmatch .env >/dev/null 2>&1; then
+            echo "::error::.env is tracked in git. Remove it, purge it from history, and rotate every secret in it."
+            exit 1
+          fi
+          echo "OK: no .env file is tracked."
+
+      - name: Fail if a private key is tracked
+        run: |
+          tracked=$(git ls-files '*.pem' '*.key' 'id_rsa*')
+          if [ -n "$tracked" ]; then
+            echo "::error::Private key material is tracked in git:"
+            echo "$tracked"
+            exit 1
+          fi
+          echo "OK: no private key material is tracked."

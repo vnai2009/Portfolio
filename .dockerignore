@@ -1,0 +1,30 @@
+# Secrets never belong in an image layer.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Version control and tooling
+.git
+.gitignore
+.github
+.venv
+venv
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+*.egg-info
+__pycache__
+*.py[cod]
+
+# Generated output and editor noise
+*.png
+*.log
+*.svg
+.DS_Store
+.idea
+.vscode
+.impeccable

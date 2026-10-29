@@ -42,6 +42,18 @@ class Settings(BaseSettings):
         default=False,
         description="Dev convenience only. Alembic owns the schema in production.",
     )
+    db_pool_size: int = Field(
+        default=1,
+        description="Persistent DB connections per worker. Keep small on Render.",
+    )
+    db_max_overflow: int = Field(
+        default=2,
+        description="Extra DB connections beyond pool_size, per worker.",
+    )
+    db_pool_timeout: int = Field(
+        default=10,
+        description="Seconds to wait for a pooled connection before failing.",
+    )
 
     # --- Domain.com.au AVM provider -------------------------------------
     domain_api_key: SecretStr | None = Field(
@@ -73,6 +85,46 @@ class Settings(BaseSettings):
 
     # --- Transport ------------------------------------------------------
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+
+    # --- Authentication --------------------------------------------------
+    bootstrap_admin_email: str | None = Field(
+        default=None,
+        description="The only email that may mint a token with the bootstrap secret.",
+    )
+    bootstrap_admin_secret: SecretStr | None = Field(
+        default=None,
+        description="Shared secret that unlocks a token for the admin email.",
+    )
+    allow_self_service_tokens: bool = Field(
+        default=False,
+        description=(
+            "Permit token issuance for any email with no password. Dev "
+            "convenience, off by default. Only consulted when no bootstrap "
+            "admin is configured."
+        ),
+    )
+
+    @field_validator("database_url")
+    @classmethod
+    def _force_psycopg3(cls, value: str) -> str:
+        """Pin the driver to psycopg3.
+
+        Render hands out a plain ``postgresql://`` URL, which SQLAlchemy
+        routes to psycopg2. We ship psycopg3, so a URL copied straight from
+        the Render dashboard would fail with a confusing
+        ``ModuleNotFoundError: psycopg2``. Rewrite the scheme instead.
+        """
+        url = value.strip()
+        rewrites = (
+            ("postgresql+psycopg2://", "postgresql+psycopg://"),
+            ("postgres+psycopg2://", "postgresql+psycopg://"),
+            ("postgresql://", "postgresql+psycopg://"),
+            ("postgres://", "postgresql+psycopg://"),
+        )
+        for prefix, replacement in rewrites:
+            if url.startswith(prefix):
+                return replacement + url[len(prefix) :]
+        return url
 
     @field_validator("domain_auth_mode")
     @classmethod
@@ -113,6 +165,45 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def _bootstrap_admin_is_a_pair(self) -> "Settings":
+        has_email = bool((self.bootstrap_admin_email or "").strip())
+        has_secret = bool(
+            self.bootstrap_admin_secret and self.bootstrap_admin_secret.get_secret_value().strip()
+        )
+        if has_email != has_secret:
+            raise ValueError(
+                "WEALTHY_BOOTSTRAP_ADMIN_EMAIL and WEALTHY_BOOTSTRAP_ADMIN_SECRET "
+                "must be set together — one without the other cannot be used."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _production_closes_self_service_auth(self) -> "Settings":
+        """Refuse to run a production build with an open token endpoint.
+
+        ``POST /auth/token`` mints a working API token for any email, with no
+        password. That is a convenience for local development and a critical
+        hole in a publicly reachable deployment. The failure is loud and at
+        startup, not a mystery later.
+
+        A bootstrap admin closes it. If one is configured, closed mode is
+        used regardless of ``allow_self_service_tokens``.
+        """
+        if self.debug:
+            return self
+        if self.has_bootstrap_admin:
+            return self
+        if self.allow_self_service_tokens:
+            return self
+        raise ValueError(
+            "WEALTHY_DEBUG=false requires closed authentication. Set "
+            "WEALTHY_BOOTSTRAP_ADMIN_EMAIL and WEALTHY_BOOTSTRAP_ADMIN_SECRET "
+            "to enable the single-admin login, or set "
+            "WEALTHY_ALLOW_SELF_SERVICE_TOKENS=true to accept an "
+            "unauthenticated public token endpoint."
+        )
+
     @property
     def has_domain_credentials(self) -> bool:
         """True when a usable Domain API key is configured."""
@@ -127,6 +218,23 @@ class Settings(BaseSettings):
             return None
         assert self.domain_api_key is not None
         return self.domain_api_key.get_secret_value().strip()
+
+    @property
+    def has_bootstrap_admin(self) -> bool:
+        """True when a bootstrap admin email and secret are both configured."""
+        if not (self.bootstrap_admin_email or "").strip():
+            return False
+        if self.bootstrap_admin_secret is None:
+            return False
+        return bool(self.bootstrap_admin_secret.get_secret_value().strip())
+
+    @property
+    def bootstrap_admin_secret_value(self) -> str | None:
+        """The bootstrap secret in plain text, or None when unset."""
+        if not self.has_bootstrap_admin:
+            return None
+        assert self.bootstrap_admin_secret is not None
+        return self.bootstrap_admin_secret.get_secret_value()
 
 
 settings = Settings()

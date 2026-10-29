@@ -266,8 +266,17 @@ legacy/
 portfolio_tree.py                 # standalone graphviz portfolio diagram
 alembic.ini
 pyproject.toml                    # `pip install -e ".[dev]"`
+requirements.txt                  # pinned runtime deps — what Render installs
 .env                             # gitignored
 .env.example                     # committed
+
+# --- Deployment ---
+render.yaml                       # Render Blueprint: web service + Postgres
+Dockerfile                        # alternative runtime (non-root, python:3.14-slim)
+.dockerignore
+.python-version                   # pins the Python minor line
+.github/workflows/ci.yml          # tests + secret hygiene, gates the deploy
+DEPLOYMENT.md                     # deployment guide and runbook
 ```
 
 ---
@@ -356,19 +365,31 @@ All settings are read from environment variables, falling back to `.env`.
 | `WEALTHY_DEBUG` | `bool` | `False` | no | `True` in dev only — enables tracebacks and `/docs` |
 | `WEALTHY_DATABASE_URL` | `str` | — | **yes** | `postgresql+psycopg://user:pass@host:5432/db` |
 | `WEALTHY_AUTO_CREATE_TABLES` | `bool` | `False` | no | Dev convenience only |
+| `WEALTHY_DB_POOL_SIZE` | `int` | `1` | no | Persistent DB connections per worker |
+| `WEALTHY_DB_MAX_OVERFLOW` | `int` | `2` | no | Extra DB connections per worker |
+| `WEALTHY_DB_POOL_TIMEOUT` | `int` | `10` | no | Seconds to wait for a pooled connection |
 | `WEALTHY_DOMAIN_API_KEY` | `SecretStr` | — | no\* | Bearer token for the AVM provider |
 | `WEALTHY_DOMAIN_AUTH_MODE` | `str` | `api_key` | no | `api_key` (x-api-key) or `bearer` |
 | `WEALTHY_DOMAIN_BASE_URL` | `str` | `https://api.domain.com.au` | no | |
 | `WEALTHY_DOMAIN_TIMEOUT` | `float` | `10.0` | no | Read timeout, seconds |
 | `WEALTHY_DOMAIN_CONNECT_TIMEOUT` | `float` | `3.05` | no | Connect timeout, seconds |
 | `WEALTHY_DOMAIN_RETRIES` | `int` | `2` | no | Retries for `429`/`5xx` |
+| `WEALTHY_DOMAIN_BACKOFF_FACTOR` | `float` | `0.5` | no | urllib3 backoff factor |
 | `WEALTHY_ALLOW_ESTIMATE_FALLBACK` | `bool` | `True` | no | Degrade to an estimate when Domain is down |
 | `WEALTHY_STRICT_PROVIDER` | `bool` | `False` | no | Return `502` instead of degrading |
 | `WEALTHY_CORS_ORIGINS` | `list[str]` | `["http://localhost:5173"]` | no | Explicit origins — never `*` with credentials |
+| `WEALTHY_BOOTSTRAP_ADMIN_EMAIL` | `str` | — | no\* | The only email permitted to mint a token |
+| `WEALTHY_BOOTSTRAP_ADMIN_SECRET` | `SecretStr` | — | no\* | Shared secret for that email |
+| `WEALTHY_ALLOW_SELF_SERVICE_TOKENS` | `bool` | `False` | no | Permit token issuance for any email. Dev only |
 
 \* `WEALTHY_DOMAIN_API_KEY` is required in practice. It is only optional at
 the settings layer so the app can boot in a demo without credentials; when
 `WEALTHY_STRICT_PROVIDER=true` a missing key is a **startup error**.
+
+The bootstrap admin pair is required in production. With
+`WEALTHY_DEBUG=false` and no bootstrap admin configured, the app **refuses
+to start**, because `POST /auth/token` would otherwise issue a working API
+token to anyone who asks for one.
 
 **Resolution order** (highest priority first):
 
@@ -391,8 +412,11 @@ Authorization: Bearer wpx_9BSC9LJ0W1...
 ```
 
 - `POST /auth/token` — exchanges an email for a token, creating the owner on
-  first use. This is a **local-development convenience**; a production
-  deployment would verify the email before minting a token.
+  first use. In **development** any email works with no password. In
+  **production** a bootstrap administrator is configured, and only that one
+  email may mint a token, and only by presenting the shared secret. Every
+  other email gets `403`. See the Authentication section of
+  [DEPLOYMENT.md](DEPLOYMENT.md).
 - The token is 32 bytes of random data, URL-safe. Only its SHA-256 hash is
   stored — it is shown exactly once, at issue time.
 - `GET /auth/whoami` — who the presented token belongs to.
@@ -567,19 +591,39 @@ createdb wealthnexus_test
 
 ## Deployment
 
+The full deployment guide and runbook lives in **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+It covers the Render setup, the environment variables, the connection budget,
+smoke testing, rollback, and the troubleshooting table.
+
+The short version, for a production process:
+
 ```bash
-uvicorn app.main:app --workers 4 --proxy-headers --forwarded-allow-ips="*"
+alembic upgrade head && exec uvicorn app.main:app \
+  --host 0.0.0.0 --port $PORT \
+  --workers 2 \
+  --proxy-headers --forwarded-allow-ips="*"
 ```
 
-- Run `alembic upgrade head` **once**, before the app starts.
+- Run `alembic upgrade head` before the app starts. It is idempotent, so
+  running it on every start is safe.
 - Set `WEALTHY_DEBUG=false` — this also disables `/docs`, `/redoc` and
-  `/openapi.json`.
-- Set `WEALTHY_STRICT_PROVIDER=true` in production, so a provider outage
-  returns `502` rather than an estimate nobody can attribute.
+  `/openapi.json`, and it turns on the startup guard that refuses an open
+  token endpoint.
+- Set `WEALTHY_BOOTSTRAP_ADMIN_EMAIL` and `WEALTHY_BOOTSTRAP_ADMIN_SECRET`.
+  Without them, `POST /auth/token` would issue a working API token to anyone
+  who asks for one.
+- Set `WEALTHY_STRICT_PROVIDER=true` in production **once you have a real
+  `WEALTHY_DOMAIN_API_KEY`**, so a provider outage returns `502` rather than
+  an estimate nobody can attribute. Strict mode also makes a missing key a
+  startup error.
 - Provide `WEALTHY_DOMAIN_API_KEY` and `WEALTHY_DATABASE_URL` as secrets,
   never as committed files.
-- Point the orchestrator's health check at `/health/ready`, and its liveness
-  probe at `/health/live`.
+- Keep the worker count and the pool size in step. SQLAlchemy's default
+  pool allows 15 connections per worker, so four workers would open 60.
+  `WEALTHY_DB_POOL_SIZE` and `WEALTHY_DB_MAX_OVERFLOW` bring that down.
+- Point the orchestrator's health check at `/health/live` and use
+  `/health/ready` as a manual pre-release gate. Readiness runs `SELECT 1`;
+  liveness touches nothing.
 - Set `root_path` and `proxy_headers` if you sit behind a reverse proxy.
 
 ---

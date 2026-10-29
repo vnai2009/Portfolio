@@ -25,13 +25,13 @@
 <body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans selection:bg-blue-500 selection:text-white">
 
     <!-- Top Navigation Bar -->
-    <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-40 px-6 py-4 flex items-center justify-between">
+    <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-40 px-6 py-4 flex flex-wrap items-center justify-between gap-y-3">
         <div class="flex items-center space-x-3">
             <div class="bg-blue-600 text-white p-2.5 rounded-xl shadow-lg shadow-blue-500/30">
                 <i class="fa-solid fa-house-chimney-user text-lg"></i>
             </div>
             <div>
-                <h1 class="font-bold text-xl tracking-tight">WealthNexus <span class="text-blue-400 font-normal">Property Portfolio Engine</span></h1>
+                <h1 class="font-bold text-2xl tracking-tight">WealthNexus <span class="text-blue-400 font-normal">Property Portfolio Engine</span></h1>
                 <p class="text-xs text-slate-400">Live Valuation, Entity Transfer &amp; Profit Tracking</p>
             </div>
         </div>
@@ -65,6 +65,16 @@
                             <input type="email" id="signInEmail" required
                                 placeholder="you@example.com"
                                 class="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-blue-500 transition-colors">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-400 mb-1">Access secret</label>
+                            <input type="password" id="signInSecret" autocomplete="current-password"
+                                placeholder="Administrator secret, if you have one"
+                                class="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-blue-500 transition-colors">
+                            <p class="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                                Leave empty for a normal account. The administrator
+                                account requires the deployment secret.
+                            </p>
                         </div>
                         <button type="submit" id="signInBtn"
                             class="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium py-2.5 rounded-xl shadow-lg shadow-blue-600/20 transition-all">
@@ -596,8 +606,13 @@
             try {
                 const data = await apiFetch('/auth/token', {
                     method: 'POST',
-                    body: JSON.stringify({ email: document.getElementById('signInEmail').value })
+                    body: JSON.stringify({
+                        email: document.getElementById('signInEmail').value,
+                        password: document.getElementById('signInSecret').value || null
+                    })
                 });
+                // Do not leave the secret sitting in the DOM after sign-in.
+                document.getElementById('signInSecret').value = '';
                 setSignedIn(data.access_token);
                 await loadPortfolio();
                 toast('Signed in as ' + data.email, 'ok');

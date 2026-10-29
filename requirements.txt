@@ -1,15 +1,21 @@
-# Runtime dependencies. `pip install -e ".[dev]"` is the preferred install
-# (see pyproject.toml); this file mirrors it for `pip install -r`.
-fastapi>=0.115
-uvicorn[standard]>=0.28
-pydantic>=2.6
-pydantic-settings>=2.2
-sqlalchemy>=2.0.30
-psycopg[binary]>=3.2
-requests>=2.32
-urllib3>=2.2
-alembic>=1.13
-python-dotenv>=1.0
+# Runtime dependencies, pinned to the versions this release was tested
+# against. Upper bounds stop a surprise major release landing mid-deploy;
+# lower bounds keep patch upgrades welcome.
+#
+# Locally, `pip install -e ".[dev]"` is the preferred install (see
+# pyproject.toml). This file is what Render installs in production, so it
+# carries the runtime dependencies plus the tooling CI needs.
+
+fastapi>=0.162,<0.163
+uvicorn[standard]>=0.54,<0.55
+pydantic>=2.14,<3
+pydantic-settings>=2.2,<3
+sqlalchemy>=2.1,<2.2
+psycopg[binary]>=3.3,<4
+requests>=2.32,<3
+urllib3>=2.2,<3
+alembic>=1.20,<2
+python-dotenv>=1.0,<2
 
 # Dev / test extras
 pytest>=8.0

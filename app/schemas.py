@@ -80,12 +80,17 @@ class EntityTransferRequest(BaseModel):
 
 
 class TokenRequest(BaseModel):
-    """Body for ``POST /auth/token`` — exchanges an email for an API token."""
+    """Body for ``POST /auth/token`` — exchanges an email for an API token.
+
+    ``password`` is required only in closed mode, where it must match the
+    bootstrap admin secret. It is never stored.
+    """
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
     email: str = Field(..., min_length=3, max_length=320)
     display_name: str | None = Field(default=None, max_length=120)
+    password: str | None = Field(default=None, max_length=512)
 
 
 class TokenResponse(BaseModel):
